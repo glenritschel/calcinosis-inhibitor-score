@@ -1,0 +1,121 @@
+# ENPP1 LEAVE-ONE-OUT, 2026-10-26. DIAGNOSTIC, NOT A TEST.
+#
+# THE QUESTION IS GLEN'S OWN, put to Remo Rohs on 2026-10-25: "When the mechanistically central
+# member of a set is the one you can barely measure, is the set still measuring the mechanism, or
+# is it measuring whichever neighbors happen to be abundant enough to see?"
+#
+# ⛔ WHAT THIS IS NOT. It is NOT a new test, it produces NO new p-value claim, and NO GENE IS
+# DROPPED ON THE BASIS OF IT. The frozen six stay frozen. It is a sensitivity analysis of a
+# result already obtained (RESULT_11), on data already seen, and it must be reported as post hoc.
+#
+# ⭐ ONE THING THE SCORING MODULE ALREADY SETTLES, BEFORE ANY NUMBER COMES BACK. set_score
+# z-scores EACH GENE ACROSS DONORS and then takes the MEAN. Every surviving gene therefore
+# carries EQUAL WEIGHT: ENPP1 at 1.37% detection is NOT down-weighted against MGP at 52.9%. So
+# abundance cannot bias the weighting. What it can do is make ENPP1's per-donor estimate NOISY,
+# contributing equal weight and little signal, diluting the genes that carry the result. That is
+# the version of the question this cell actually answers.
+#
+# ⛔ AND IT FIXES A REPRODUCIBILITY GAP FOUND TODAY: the plate table from the replication run was
+# NEVER PERSISTED, so RESULT_11 cannot be re-derived without re-fetching every plate. This cell
+# SAVES IT.
+
+import io, gzip, zlib, requests, numpy as np, pandas as pd
+import donor_group as DG, replication_harness as H, inhibition_score as S
+
+FROZEN6 = ["ENPP1","ANKH","MGP","GGCX","VKORC1","NT5E"]
+EXPECTED_DIFF = -0.2939          # RESULT_11, disease minus control
+TOL = 0.005
+
+# ---- 1. cohort, metadata only, with the prep script's own asserts as controls -------------
+BASE = "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE195nnn/GSE195452/matrix/"
+UA = {"User-Agent": "Mozilla/5.0 (research; ORCID 0009-0006-5341-8840)"}
+get = lambda fn: gzip.decompress(requests.get(BASE+fn, headers=UA, timeout=300).content).decode("utf8","replace")
+SM = {p: get("GSE195452-%s_series_matrix.txt.gz" % p) for p in ("GPL24676","GPL18573")}
+cut = lambda t: t[:t.index("!series_matrix_table_begin")]
+row = lambda t,k: [x.strip('"') for x in [l for l in cut(t).split("\n") if l.startswith(k)][0].split("\t")[1:]]
+chs = lambda t: [[x.strip('"') for x in l.split("\t")[1:]] for l in cut(t).split("\n") if l.startswith("!Sample_characteristics")]
+build = lambda t: [dict([("gsm",g),("title",ti)] + [(c[i].split(": ")[0].strip().lower(), c[i].split(": ",1)[-1]) for c in chs(t) if ": " in c[i]]) for i,(g,ti) in enumerate(zip(row(t,"!Sample_geo_accession"), row(t,"!Sample_title")))]
+REC24, REC18 = build(SM["GPL24676"]), build(SM["GPL18573"])
+ex  = lambda R: [r for r in R if r.get("tissue")=="Skin" and r.get("selection marker")=="CD90+"]
+E24, E18 = ex(REC24), ex(REC18)
+nm  = lambda r: DG._norm(r.get("patient id",""))
+ids24, ids18 = {nm(r) for r in E24}, {nm(r) for r in E18}
+assert (len(E18),len(ids18))==(184,101) and (len(E24),len(ids24))==(159,71), "cohort does not reconstruct"
+PRIMARY = H.option_b_primary(ids24, ids18)
+isc = lambda d: d.lower().startswith("ctrl")
+assert len(PRIMARY)==50, "PRIMARY is %d, not the pre-registered 50" % len(PRIMARY)
+H.check_primary(PRIMARY, isc)
+print("COHORT OK: Option B primary %d, control %d, patient %d"
+      % (len(PRIMARY), sum(1 for d in PRIMARY if isc(d)), sum(1 for d in PRIMARY if not isc(d))))
+
+# ---- 2. plates, fetched once, then SAVED -------------------------------------------------
+P = set(PRIMARY)
+recs = [dict(gsm=r["gsm"], title=r["title"], donor=nm(r), ctrl=isc(nm(r)))
+        for r in E24 if nm(r) in P]
+print("plates to fetch: %d" % len(recs))
+sbase = lambda g: "https://ftp.ncbi.nlm.nih.gov/geo/samples/" + g[:-3] + "nnn/" + g + "/suppl/"
+fetch = lambda gsm, title: pd.read_csv(io.BytesIO(zlib.decompress(
+    requests.get(sbase(gsm)+gsm+"_"+title+".txt.gz", headers=UA, timeout=240).content, 31)),
+    sep="\t", index_col=0)
+PL, DET, skipped = H.build_plate_table(recs, fetch)
+print("plates read: %d   skipped: %d %r" % (len(PL), len(skipped), skipped[:3]))
+PL.to_csv("PLATE_TABLE_GSE195452_optionB_2026-10-26.csv", index=False)
+print("⭐ SAVED PLATE_TABLE_GSE195452_optionB_2026-10-26.csv -- this did not exist before today")
+
+print("\nCELL-LEVEL DETECTION RATE, the number the question is about:")
+for g in FROZEN6:
+    print("   %-9s %.4f%s" % (g, DET[g], "   <- floor is 0.01" if DET[g] < 0.02 else ""))
+
+# ---- 3. POSITIVE CONTROL: reproduce RESULT_11 or the whole cell is void -------------------
+dmat, labels = H.donor_matrix_and_labels(PL)
+# ALIGN EXPLICITLY. Both come from a groupby so the order should match, but relying on
+# that is how a silently transposed label vector gets into a result. Reindex and assert.
+try:
+    ctrl = np.asarray(labels.reindex(dmat.columns).values, dtype=bool)
+    assert not labels.reindex(dmat.columns).isna().any(), "a donor has no control label"
+except AttributeError:
+    ctrl = np.array([bool(labels[d]) for d in dmat.columns])
+assert len(ctrl) == dmat.shape[1], "label vector and donor matrix disagree on width"
+def diff(genes):
+    # min_survivors=1 IS DECLARED HERE AND IS NOT A LOOSENING. From 2026-10-26 set_score
+    # refuses to score below MIN_SET_SURVIVORS unless the caller names its own floor, because
+    # a set could otherwise shrink under the declared floor silently (Enock Mararo's point 5).
+    # THIS CELL IS A DIAGNOSTIC THAT SCORES FIVE-GENE SUBSETS AND SINGLE GENES ON PURPOSE, so
+    # it must say so out loud. ⛔ A PRIMARY OR HELD-OUT RUN MUST NEVER PASS THIS ARGUMENT.
+    sc, cov, used = S.set_score(dmat, genes, min_survivors=1)
+    v = np.asarray(sc, float)
+    return float(v[~ctrl].mean() - v[ctrl].mean()), cov, used
+full, cov, used = diff(FROZEN6)
+print("\nFULL SCORE, frozen six: observed difference %.4f  (RESULT_11 recorded %.4f)" % (full, EXPECTED_DIFF))
+print("genes actually used: %r   coverage %.2f" % (used, cov))
+assert abs(full - EXPECTED_DIFF) < TOL, \
+    "⛔ VOID: the full score does not reproduce RESULT_11 (%.4f vs %.4f). The leave-one-out " \
+    "means NOTHING until this matches. Do not read anything below." % (full, EXPECTED_DIFF)
+print("✅ POSITIVE CONTROL PASSED. The leave-one-out below is interpretable.")
+
+# ---- 4. leave one out, and each gene alone -----------------------------------------------
+print("\n%-9s %10s %10s   %s" % ("dropped", "diff", "change", "reading"))
+print("%-9s %10.4f %10s   %s" % ("(none)", full, "-", "the pre-registered result"))
+rows=[]
+for g in FROZEN6:
+    d,_,_ = diff([x for x in FROZEN6 if x != g])
+    ch = d - full
+    rows.append((g,d,ch))
+    read = ("REMOVING IT STRENGTHENS the result -> it was adding noise" if ch < -0.01 else
+            "removing it WEAKENS the result -> it was carrying signal" if ch > 0.01 else
+            "near zero -> it contributes little either way")
+    print("%-9s %10.4f %+10.4f   %s" % (g, d, ch, read))
+
+print("\n%-9s %10s   %s" % ("alone", "diff", "its own separation, same sign convention"))
+for g in FROZEN6:
+    try:
+        d,_,_ = diff([g]); print("%-9s %10.4f" % (g, d))
+    except S.Void as e:
+        print("%-9s %10s   VOID: %s" % (g, "-", e))
+
+print("\nREAD THIS, NOT THE TABLE ALONE:")
+print("  Each gene carries EQUAL WEIGHT by construction, so a large change on removal means the")
+print("  gene was contributing SIGNAL, and a change toward a stronger result means it was")
+print("  contributing NOISE that the other five had to overcome.")
+print("  ⛔ NO GENE IS DROPPED ON THE BASIS OF THIS. The frozen six are frozen. This is a")
+print("  DIAGNOSTIC and it is reported as post hoc, in the limitations, never as a new result.")

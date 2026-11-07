@@ -1,0 +1,38 @@
+# ============================================================================
+# CELL R0-PRE. RUN THIS ONCE PER COLAB SESSION, BEFORE CELL R0.
+# READS NO DATA. SPENDS NO LOOK.
+#
+# WHY THIS EXISTS, FOUND 2026-10-29. Cells R0 and R1 both open with the cell magic %%R, and
+# NO CELL ANYWHERE IN THIS PROGRAM EVER LOADED rpy2. On a fresh Colab Python runtime %%R does
+# not exist and R0 fails on its first line; on Colab's native R runtime %%R is not valid R
+# either. Both cells have been sitting since 2026-10-28 in a state where they could not run
+# as written. A cell that looks finished and cannot execute is the same shape as a check that
+# passes because it was never about the thing that changed.
+#
+# A CELL MAGIC MUST BE THE FIRST LINE OF ITS OWN CELL, so this cannot be folded into R0.
+# ============================================================================
+import importlib.util, subprocess, sys, shutil
+
+print("python :", sys.version.split()[0])
+rbin = shutil.which("R") or shutil.which("Rscript")
+print("R on PATH:", rbin or "NOT FOUND")
+if not rbin:
+    print("\nSTOP. There is no R on this runtime at all, so rpy2 cannot bridge to one.")
+    print("Switch the Colab runtime to one that provides R, or run R0 and R1 elsewhere.")
+else:
+    out = subprocess.run([rbin, "--version"], capture_output=True, text=True)
+    print("R reports:", (out.stdout or out.stderr).splitlines()[0])
+
+if importlib.util.find_spec("rpy2") is None:
+    print("\nrpy2 not present, installing (quiet)...")
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "rpy2"], check=True)
+else:
+    print("\nrpy2 already present")
+
+import rpy2
+print("rpy2 version:", rpy2.__version__)
+
+%load_ext rpy2.ipython
+print("\n%%R is now available. Proceed to CELL R0.")
+print("If this line printed and R0 still says 'Cell magic %%R not found',")
+print("the extension did not load and you must say so rather than working around it.")

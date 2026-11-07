@@ -1,0 +1,111 @@
+# ============================================================================
+# CELL R2. PER-DONOR MATRIX FOR GSE292979, ON THE CALLED CELLS.
+# RUN AFTER R1. Produces the TRUE-KEYED matrix that goes to the co-author for
+# recoding under variant B. SHE recodes; this cell never sees a code.
+#
+# ⛔ ARMS ARE NEVER READ. No title is loaded, no label is printed, output is
+# keyed by GSM accession only. Section 7 names titles as the unblinding hazard.
+#
+# EVERY RULE BELOW IS FROM PROTOCOL_ADDENDUM_SCORE_SPEC (2026-10-26), with
+# "plate" reading as "sample" for a 10x deposit. NOTHING HERE IS INVENTED.
+#   1. library size per cell = sum over EVERY row, not only scored genes
+#   2. a cell with library size not > 0 is dropped BEFORE anything else
+#   3. sample total = sum of library sizes of the KEPT cells
+#   4. a symbol on more than one row is SUMMED across rows, never first-wins
+#   5. a symbol absent from the index yields NA, NOT zero
+#   6. sample value = summed counts over kept cells / sample total * 1e6,
+#      a share of the SAMPLE's counts, NOT a per-cell mean
+#   7. donor value = ARITHMETIC MEAN of that donor's sample values
+#   8. ⛔⛔ log1p IS APPLIED AFTER THE DONOR MEAN, NEVER BEFORE IT.
+#      The spec names this as the single most likely point of disagreement.
+#   9. MIN_CELL_DETECT 0.01, denominator = ALL kept cells across ALL samples
+#  10. MIN_DONOR_NONZERO 0.50, on the donor-level value
+# ============================================================================
+%%R
+suppressPackageStartupMessages({library(DropletUtils); library(Matrix)})
+stopifnot(identical(as.character(packageVersion("DropletUtils")), "1.32.1"))
+
+PRIMARY    <- c("ENPP1","ANKH","MGP","GGCX","VKORC1","NT5E")
+SECONDARY  <- c(PRIMARY, "ABCC6", "TNFRSF11B")
+OSTEOGENIC <- c("RUNX2","SP7","BMP2","MSX2","ALPL","IBSP","BGLAP")
+stopifnot(length(PRIMARY)==6, length(SECONDARY)==8, length(OSTEOGENIC)==7)
+GENES <- unique(c(SECONDARY, OSTEOGENIC))
+
+MIN_CELL_DETECT <- 0.01; MIN_DONOR_NONZERO <- 0.50; MIN_SET_SURVIVORS <- 5
+
+gsms <- readLines("/content/GSE292979_manifest.txt"); gsms <- gsms[nzchar(gsms)]
+stopifnot(length(gsms) == 15)
+CALLED <- "/content/GSE292979_called"; OUT <- "/content/GSE292979_matrix"
+dir.create(OUT, showWarnings=FALSE)
+
+val <- matrix(NA_real_, nrow=length(GENES), ncol=length(gsms),
+              dimnames=list(GENES, gsms))
+nz_cells <- setNames(rep(0, length(GENES)), GENES)   # rule 9 numerator
+kept_all <- 0                                        # rule 9 denominator
+depth    <- setNames(rep(NA_real_, length(gsms)), gsms)
+
+for (g in gsms) {
+  sce <- read10xCounts(file.path("/content/GSE292979", paste0(g, "_raw")), col.names=TRUE)
+  m   <- counts(sce)
+  sym <- as.character(rowData(sce)$Symbol)
+
+  bc  <- readLines(file.path(CALLED, paste0(g, "_called_barcodes.txt")))
+  bc  <- bc[nzchar(bc)]
+  stopifnot(all(bc %in% colnames(m)))
+  m   <- m[, bc, drop=FALSE]
+
+  lib  <- Matrix::colSums(m)                       # rule 1, over EVERY row
+  keep <- lib > 0                                  # rule 2
+  if (!any(keep)) stop(sprintf("%s has no cell with positive library size: ERROR, not a zero", g))
+  m <- m[, keep, drop=FALSE]; lib <- lib[keep]
+  total <- sum(lib)                                # rule 3
+  kept_all <- kept_all + ncol(m)
+  depth[g] <- median(lib)
+
+  for (gene in GENES) {
+    rows <- which(sym == gene)
+    if (length(rows) == 0) next                    # rule 5: stays NA
+    s <- if (length(rows) == 1) m[rows, , drop=FALSE] else m[rows, , drop=FALSE]
+    csum <- Matrix::colSums(s)                     # rule 4: SUMMED across rows
+    val[gene, g] <- sum(csum) / total * 1e6        # rule 6
+    nz_cells[gene] <- nz_cells[gene] + sum(csum > 0)
+  }
+  cat(sprintf("%s  called %6d  kept %6d  total %12.0f  median lib %7.0f\n",
+              g, length(bc), ncol(m), total, depth[g]))
+}
+
+cat("\nkept cells across all samples:", kept_all, "\n")
+
+# ---- rule 7 then rule 8. ONE sample per donor here, so the mean is over one ----
+# value, but it is written as the mean so the algorithm is the same one.
+donor <- val                                       # rule 7
+dmat  <- log1p(donor)                              # rule 8, AFTER the mean
+stopifnot(all(is.na(dmat) | dmat >= 0))
+
+cat("\n---- DETECTION GATES ----\n")
+det <- nz_cells / kept_all
+surv <- character(0)
+for (gene in GENES) {
+  present <- !all(is.na(val[gene, ]))
+  d  <- det[gene]
+  nzd <- sum(!is.na(donor[gene,]) & donor[gene,] > 0)
+  ok <- present && d >= MIN_CELL_DETECT && (nzd/length(gsms)) >= MIN_DONOR_NONZERO
+  cat(sprintf("  %-10s %s  cells %7.4f%%  donors nonzero %2d/%2d  %s\n", gene,
+      if (present) "present" else "ABSENT ", 100*d, nzd, length(gsms),
+      if (!present) "NA, not zero" else if (ok) "keep" else "DROPPED"))
+  if (ok) surv <- c(surv, gene)
+}
+for (nm in c("PRIMARY","SECONDARY","OSTEOGENIC")) {
+  st <- get(nm); k <- sum(st %in% surv)
+  cat(sprintf("\n%-10s %d of %d survive  %s", nm, k, length(st),
+      if (k < MIN_SET_SURVIVORS) "*** VOID IN THIS DATASET. VOID IS NOT A NULL. ***" else "evaluable"))
+}
+cat("\n\n")
+
+write.csv(data.frame(gsm=gsms, median_library=as.numeric(depth)),
+          file.path(OUT,"GSE292979_depth_by_gsm.csv"), row.names=FALSE)
+write.csv(as.data.frame(dmat), file.path(OUT,"GSE292979_donor_matrix_TRUEKEY_log1p.csv"))
+write.csv(as.data.frame(donor), file.path(OUT,"GSE292979_donor_matrix_TRUEKEY_raw.csv"))
+cat("wrote", list.files(OUT), sep="\n  ")
+cat("\n\n⛔ THESE FILES ARE KEYED BY GSM AND GO TO THE CO-AUTHOR, NOT TO THE SECOND ANALYST.\n")
+cat("   She holds the permutation and returns the recoded matrix. No arm was read here.\n")

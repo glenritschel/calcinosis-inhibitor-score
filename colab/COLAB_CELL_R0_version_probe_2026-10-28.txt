@@ -1,0 +1,35 @@
+# ============================================================================
+# CELL R0. VERSION PROBE. READS NO DATA. SPENDS NO LOOK.
+#
+# WHY THIS EXISTS. The cell-calling addendum binds DropletUtils 1.32.1 and says the R version is
+# pinned alongside it. Checked against the Bioconductor release page rather than from memory:
+#   DropletUtils 1.32.1  =  Bioconductor 3.23  =  R 4.6
+# Colab's R runtime has historically lagged the current R release. IF COLAB SHIPS R BELOW 4.6,
+# BiocManager WILL SILENTLY INSTALL AN OLDER DropletUtils instead of refusing, and the run would
+# satisfy every other control while violating the pin. That is the shape of the whole day: a check
+# that passes because it was never about the thing that changed.
+#
+# RUN THIS FIRST. It reads nothing and decides whether the pinned environment is reachable here.
+# ============================================================================
+%%R
+cat("R version:    ", R.version.string, "\n")
+cat("R major.minor:", paste(R.version$major, R.version$minor, sep="."), "\n\n")
+
+ok_r <- getRversion() >= "4.6.0"
+cat("R >= 4.6 required by Bioconductor 3.23:", if (ok_r) "YES" else "NO", "\n\n")
+
+if (!requireNamespace("BiocManager", quietly=TRUE)) install.packages("BiocManager")
+cat("BiocManager version:", as.character(packageVersion("BiocManager")), "\n")
+cat("BiocManager would use Bioconductor:", as.character(BiocManager::version()), "\n\n")
+
+if (!ok_r) {
+  cat("STOP. The pinned environment is NOT reachable on this runtime.\n")
+  cat("Installing DropletUtils here would give whatever version matches this R,\n")
+  cat("NOT 1.32.1, and BiocManager would not announce that as an error.\n")
+  cat("Do not proceed. Report the two version lines above and stop.\n")
+} else {
+  if (!requireNamespace("DropletUtils", quietly=TRUE)) BiocManager::install("DropletUtils", ask=FALSE, update=FALSE)
+  v <- as.character(packageVersion("DropletUtils"))
+  cat("DropletUtils installed version:", v, "\n")
+  cat("MATCHES THE PIN (1.32.1):", if (identical(v, "1.32.1")) "YES, proceed to cell R1" else "NO, STOP", "\n")
+}

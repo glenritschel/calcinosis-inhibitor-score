@@ -1,0 +1,39 @@
+# ======================================================================================
+# RUN THIS IN THE SAME COLAB SESSION AS THE LEAVE-ONE-OUT, BEFORE IT EXPIRES.
+#
+# The leave-one-out wrote PLATE_TABLE_GSE195452_optionB_2026-10-26.csv into the Colab
+# working directory. IT IS NOT ON DISK ANYWHERE ELSE. That file is the only thing that
+# lets RESULT_11 be re-derived without refetching 108 plates over the network, which is
+# the reproducibility gap the run was built to close. If the session recycles first, the
+# gap reopens and closing it again costs another full refetch.
+#
+# This cell verifies the file before offering it, so a truncated or empty download is
+# caught here rather than discovered later.
+# ======================================================================================
+import os, hashlib
+import pandas as pd
+
+F = "PLATE_TABLE_GSE195452_optionB_2026-10-26.csv"
+assert os.path.exists(F), (
+    "⛔ %s is not in this session. Either the leave-one-out has not been run in THIS "
+    "session, or the session has already recycled. Re-run the leave-one-out cell." % F)
+
+PL = pd.read_csv(F)
+n_plates, n_donors = len(PL), PL["donor"].nunique()
+print("rows (plates) :", n_plates)
+print("donors        :", n_donors)
+print("columns       :", list(PL.columns))
+print("sha256        :", hashlib.sha256(open(F,"rb").read()).hexdigest()[:16])
+print("bytes         :", os.path.getsize(F))
+
+# The run reported 108 plates fetched with zero skipped and coverage 1.00. Assert it,
+# so a partial table cannot be downloaded and mistaken for the real one.
+assert n_plates == 108, "⛔ %d plates, not the 108 the run reported. DO NOT download this." % n_plates
+assert PL["cells"].gt(0).all(), "⛔ a plate has no kept cells"
+assert not PL[[c for c in PL.columns if c not in ("donor","ctrl","gsm","title")]].isna().all().any(), \
+    "⛔ a gene column is entirely NaN"
+print("\n✅ TABLE VERIFIED. Downloading.")
+
+from google.colab import files
+files.download(F)
+print("\nPut it in ledger/calcinosis/ next to inhibition_score.py.")

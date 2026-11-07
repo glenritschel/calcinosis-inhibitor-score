@@ -1,0 +1,99 @@
+# ============================================================================
+# CELL R1 r2. CELL CALLING, GSE292979.
+# RUN ONLY AFTER R0 PRINTS "MATCHES THE PIN (1.32.1): YES" AND R0B PRINTS "PROCEED TO CELL R1".
+#
+# BINDING SOURCE: PREREG_GSE292979_v1_ADDENDUM_CELL_CALLING_2026-10-28.md, binding 18:57 EDT.
+# Every parameter below is from that document. DO NOT TUNE ANYTHING HERE.
+#
+# ⭐ RAW IS THE CORRECT INPUT FOR THIS STEP, AND THAT IS NOT A REVERSAL OF THE WITHDRAWN RUN.
+# emptyDrops needs the unfiltered droplet matrix: it estimates the ambient profile from barcodes
+# at or below `lower`, which exist only in the raw matrix. The withdrawn run's defect was using
+# raw as the DENOMINATOR OF A DETECTION RATE without calling cells first. Raw in, called cells
+# out, detection computed against the called cells. Those are different uses of the same file.
+#
+# ⛔ THE OUTPUT USES GSM ACCESSIONS AND NEVER SAMPLE TITLES. The series titles carry Pt and HC,
+# which is the arm. Section 7 of the pre-registration names that as the unblinding hazard, and
+# Cell 1's output already carries all fifteen labels and must not be forwarded. This cell is
+# label-free by construction so its artifact is safe to hand to the second analyst.
+# ============================================================================
+%%R
+suppressPackageStartupMessages({library(DropletUtils); library(BiocParallel); library(Matrix)})
+
+# ---- HARD GATES. A wrong version must stop the run, not warn about it. ----
+stopifnot(getRversion() >= "4.6.0")
+stopifnot(identical(as.character(packageVersion("DropletUtils")), "1.32.1"))
+
+# ---- RNG. Pinned because a seed without a stream is not a pin (addendum 4.3). ----
+RNGkind("Mersenne-Twister", "Inversion", "Rejection")
+cat("RNGkind:", paste(RNGkind(), collapse=" / "), "\n")
+
+# ---- NOTHING IS EDITED HERE. The GSM list comes from the manifest cell R0B wrote. ----
+# ⛔ CHANGED 2026-10-29. This block previously held ONE of fifteen accessions and a comment
+# saying to add the other fourteen BY HAND. A hand-typed list of fourteen accessions is where
+# a transcription error hides, and it would present as a missing sample rather than as an
+# error. The manifest carries ACCESSIONS ONLY and never titles, so reading it cannot unblind.
+MANIFEST <- "/content/GSE292979_manifest.txt"
+stopifnot(file.exists(MANIFEST))
+gsms <- readLines(MANIFEST); gsms <- gsms[nzchar(gsms)]
+stopifnot(length(gsms) == 15)
+RAW_DIRS <- setNames(file.path("/content/GSE292979", paste0(gsms, "_raw")), gsms)
+stopifnot(all(dir.exists(unlist(RAW_DIRS))))
+cat("GSMs from manifest:", length(gsms), "\n")
+cat("first:", gsms[1], " last:", gsms[length(gsms)], "\n\n")
+OUTDIR <- "/content/GSE292979_called"; dir.create(OUTDIR, showWarnings=FALSE)
+
+FDR_MAX <- 0.001
+SEED    <- 20261028
+
+summary_rows <- list()
+for (gsm in names(RAW_DIRS)) {
+  sce <- read10xCounts(RAW_DIRS[[gsm]], col.names=TRUE)
+  m   <- counts(sce)
+
+  # Diagnostic only. emptyDrops computes this internally when retain=NULL; we recompute it
+  # with the same default arguments purely so the knee can be REPORTED, per addendum 4.2.
+  br   <- barcodeRanks(m)
+  knee <- metadata(br)$knee
+
+  set.seed(SEED)
+  e <- emptyDrops(m,
+                  lower        = 100,
+                  retain       = NULL,          # the barcodeRanks knee; see addendum 4.2
+                  barcode.args = list(),
+                  round        = TRUE,
+                  test.ambient = FALSE,
+                  niters       = 10000,
+                  alpha        = Inf,           # the documented 1.32.1 default; see addendum 4.1
+                  by.rank      = NULL,
+                  BPPARAM      = SerialParam())
+
+  keep <- !is.na(e$FDR) & e$FDR <= FDR_MAX
+  # How many were kept by the knee override rather than by the FDR rule. This is the second,
+  # data-derived rule the addendum insists on stating rather than leaving implicit.
+  by_knee <- sum(keep & e$Total >= knee, na.rm=TRUE)
+
+  bc <- colnames(m)[keep]
+  writeLines(bc, file.path(OUTDIR, paste0(gsm, "_called_barcodes.txt")))
+
+  summary_rows[[gsm]] <- data.frame(
+    gsm          = gsm,
+    barcodes_raw = ncol(m),
+    knee_total   = knee,
+    called_cells = length(bc),
+    kept_by_knee = by_knee,
+    median_umi_called = median(Matrix::colSums(m[, keep, drop=FALSE])))
+  cat(sprintf("%s  raw %8d  knee %6.0f  called %6d  (knee-kept %5d)  median UMI %7.0f\n",
+              gsm, ncol(m), knee, length(bc), by_knee,
+              median(Matrix::colSums(m[, keep, drop=FALSE]))))
+}
+
+S <- do.call(rbind, summary_rows)
+write.csv(S, file.path(OUTDIR, "cell_calling_summary.csv"), row.names=FALSE)
+
+cat("\n---- SANITY, READ THESE BEFORE GOING ON ----\n")
+cat("A real scRNA-seq sample carries 1e3 to 2e4 cells. Any GSM whose called count is still\n")
+cat("six figures means the raw matrix was not what emptyDrops was given, and detection\n")
+cat("MUST NOT be computed against it. The withdrawn run reported 1,827,137 'cells'.\n")
+cat(sprintf("range of called cells: %d to %d\n", min(S$called_cells), max(S$called_cells)))
+cat(sprintf("median UMI across called cells, min over GSMs: %.0f  (the withdrawn run had 1.0)\n",
+            min(S$median_umi_called)))

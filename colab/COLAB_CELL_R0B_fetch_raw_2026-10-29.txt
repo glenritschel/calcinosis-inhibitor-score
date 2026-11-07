@@ -1,0 +1,92 @@
+# ============================================================================
+# CELL R0B. FETCH AND LAY OUT THE RAW MATRICES FOR GSE292979.
+# RUN AFTER R0 PRINTS "MATCHES THE PIN (1.32.1): YES". RUN BEFORE R1.
+#
+# WHY THIS EXISTS, FOUND 2026-10-29. R1 as written could not run: its RAW_DIRS held ONE of
+# fifteen GSMs with a comment to add the rest by hand, and NOTHING ANYWHERE DOWNLOADED THE
+# DATA. The raw tar is about 1.08 GB and had never been fetched. A hand-typed list of
+# fourteen accessions is also where a transcription error hides, so this cell writes the
+# manifest and R1 reads it.
+#
+# ⛔ THE UNBLINDING HAZARD GOVERNS THIS CELL. The series titles carry Pt and HC, which IS the
+# arm. Section 7 of the pre-registration names that as the hazard and Cell 1's output already
+# carries all fifteen labels and must never be forwarded. THIS CELL READS TITLES NOWHERE,
+# PRINTS TITLES NOWHERE, AND WRITES ACCESSIONS ONLY. Its artifacts are safe to hand on.
+# ============================================================================
+import urllib.request, gzip, tarfile, os, re, hashlib, shutil
+
+ACC   = "GSE292979"
+BASE  = "/content/%s" % ACC
+TAR   = "/content/%s_RAW.tar" % ACC
+MAN   = "/content/%s_manifest.txt" % ACC
+os.makedirs(BASE, exist_ok=True)
+
+# ---- 1. accessions from the series matrix. METADATA ONLY, NO TITLES ----
+sm_url = ("https://ftp.ncbi.nlm.nih.gov/geo/series/%snnn/%s/matrix/%s_series_matrix.txt.gz"
+          % (ACC[:-3], ACC, ACC))
+txt = gzip.decompress(urllib.request.urlopen(sm_url, timeout=600).read()).decode("utf-8","replace")
+gsms = []
+for line in txt.split("\n"):
+    if line.startswith("!Sample_geo_accession"):
+        gsms = [p.strip().strip('"') for p in line.split("\t")[1:]]
+        break
+print("GSM accessions in the series:", len(gsms))
+print(gsms)
+assert len(gsms) == 15, "EXPECTED 15 SAMPLES, GOT %d -- STOP AND LOOK" % len(gsms)
+assert "!Sample_title" in txt, "no title line present; that is fine, we never read it"
+print("\nTitles were NOT read and are NOT printed. Accessions only.\n")
+
+# ---- 2. the raw tar ----
+if not os.path.exists(TAR):
+    url = "https://ftp.ncbi.nlm.nih.gov/geo/series/%snnn/%s/suppl/%s_RAW.tar" % (ACC[:-3], ACC, ACC)
+    print("downloading", url)
+    urllib.request.urlretrieve(url, TAR)
+print("tar bytes:", os.path.getsize(TAR))
+print("tar sha256:", hashlib.sha256(open(TAR,"rb").read()).hexdigest()[:16])
+
+# ---- 3. DISCOVER the layout. Do not assume a 10x triplet. ----
+with tarfile.open(TAR) as t:
+    members = [m.name for m in t.getmembers() if m.isfile()]
+print("\nfiles in tar:", len(members))
+for m in members[:8]: print("   ", m)
+if len(members) > 8: print("    ... and %d more" % (len(members)-8))
+
+pat = re.compile(r"(GSM\d+)[._-]?.*?(barcodes|features|genes|matrix)\.(tsv|mtx)(\.gz)?$", re.I)
+seen = {}
+for m in members:
+    g = pat.search(os.path.basename(m))
+    if g: seen.setdefault(g.group(1), set()).add(g.group(2).lower())
+print("\nGSMs showing a 10x-style triplet:", len(seen))
+missing = [g for g in gsms if g not in seen]
+if missing:
+    print("\n*** %d GSM(s) DO NOT MATCH THE 10x TRIPLET PATTERN ***" % len(missing))
+    print("   ", missing[:6])
+    print("*** STOP. Report the file listing above. R1 expects read10xCounts on a directory")
+    print("*** holding barcodes/features/matrix, and that is not what this tar provides.")
+else:
+    with tarfile.open(TAR) as t:
+        for mem in t.getmembers():
+            if not mem.isfile(): continue
+            g = pat.search(os.path.basename(mem.name))
+            if not g: continue
+            d = os.path.join(BASE, g.group(1) + "_raw"); os.makedirs(d, exist_ok=True)
+            kind = g.group(2).lower()
+            kind = {"genes":"features"}.get(kind, kind)
+            ext  = ".mtx.gz" if kind == "matrix" else ".tsv.gz"
+            src  = t.extractfile(mem).read()
+            dest = os.path.join(d, kind + ext)
+            open(dest, "wb").write(src if mem.name.endswith(".gz") else gzip.compress(src))
+    ok = [g for g in gsms
+          if all(os.path.exists(os.path.join(BASE, g+"_raw", f))
+                 for f in ("barcodes.tsv.gz","features.tsv.gz","matrix.mtx.gz"))]
+    print("\nGSM directories complete with all three files:", len(ok), "of", len(gsms))
+    if len(ok) != len(gsms):
+        print("*** INCOMPLETE. STOP. ***", [g for g in gsms if g not in ok][:6])
+    else:
+        with open(MAN, "w") as fh: fh.write("\n".join(gsms) + "\n")
+        print("wrote", MAN)
+        print("\nR1 WILL READ THIS MANIFEST. Nothing is typed by hand.")
+        for g in gsms[:3]:
+            d = os.path.join(BASE, g+"_raw")
+            print("   %s  %s" % (g, sorted(os.listdir(d))))
+        print("\nPROCEED TO CELL R1.")

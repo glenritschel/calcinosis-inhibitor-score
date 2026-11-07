@@ -1,0 +1,128 @@
+# ============================================================================
+# CELL R2n14. THE GSM8872105 SENSITIVITY: PER-DONOR MATRIX AT FOURTEEN SAMPLES.
+#
+# WHY THIS EXISTS. The co-author ruled 2026-10-29 18:36 EDT: "keep all fifteen,
+# no post-hoc floor, pre-declare the sensitivity with and without, AND RERUN THE
+# DETECTION GATES BOTH WAYS." The with-case ran as R2. ⛔ THE WITHOUT-CASE WAS
+# PRE-DECLARED AND NEVER RUN. She asked for its output on 2026-11-05 18:54 EST
+# and refused to approximate it by dropping D15 from the existing scores. She is
+# right: PREREG ADDENDUM section 3.1 states MIN_CELL_DETECT IS POOLED, so which
+# genes survive is itself a function of which samples are in.
+#
+# ⛔ THIS CELL IS R2 WITH FOUR CHANGES AND NO OTHERS. Every scoring rule, the
+# gene sets, the constants and the arithmetic are byte-identical to R2.
+#   (1) GSM8872105 is removed from the manifest
+#   (2) the length assertion is 14, and GSM8872105 is asserted ABSENT
+#   (3) OUT is a NEW directory, so the fifteen-sample files are NOT overwritten
+#   (4) the pre-declared n=14 denominator and floor are asserted, not assumed
+#
+# ⛔ ARMS ARE NEVER READ. No title is loaded, no label is printed, output is
+# keyed by GSM accession only. Output goes to the CO-AUTHOR, never to the
+# second analyst: DEVIATION_06 bars a GSM accession from reaching him.
+#
+# CHECK AGAINST THE FIFTEEN-SAMPLE RUN, which is on the record and must not be
+# recomputed from memory: kept cells 118,056, floor 1,180.6 cells, PRIMARY 6 of
+# 6, SECONDARY 7 of 8 with ABCC6 out at 0.2058 percent, OSTEOGENIC 4 of 7 VOID.
+# BGLAP cleared by EIGHT CELLS at 1.0071 percent and is the gene most likely to
+# move. The addendum pre-declares n=14 at 117,340 kept cells and a floor of
+# 1,173.4; if the run disagrees with that, STOP AND REPORT, do not proceed.
+# ============================================================================
+%%R
+suppressPackageStartupMessages({library(DropletUtils); library(Matrix)})
+stopifnot(identical(as.character(packageVersion("DropletUtils")), "1.32.1"))
+
+PRIMARY    <- c("ENPP1","ANKH","MGP","GGCX","VKORC1","NT5E")
+SECONDARY  <- c(PRIMARY, "ABCC6", "TNFRSF11B")
+OSTEOGENIC <- c("RUNX2","SP7","BMP2","MSX2","ALPL","IBSP","BGLAP")
+stopifnot(length(PRIMARY)==6, length(SECONDARY)==8, length(OSTEOGENIC)==7)
+GENES <- unique(c(SECONDARY, OSTEOGENIC))
+
+MIN_CELL_DETECT <- 0.01; MIN_DONOR_NONZERO <- 0.50; MIN_SET_SURVIVORS <- 5
+DROP <- "GSM8872105"
+
+gsms <- readLines("/content/GSE292979_manifest.txt"); gsms <- gsms[nzchar(gsms)]
+stopifnot(length(gsms) == 15, DROP %in% gsms)          # change (2), before
+gsms <- gsms[gsms != DROP]                             # change (1)
+stopifnot(length(gsms) == 14, !(DROP %in% gsms))       # change (2), after
+CALLED <- "/content/GSE292979_called"
+OUT <- "/content/GSE292979_matrix_n14"                 # change (3)
+stopifnot(!dir.exists(OUT) || length(list.files(OUT))==0)
+dir.create(OUT, showWarnings=FALSE)
+
+val <- matrix(NA_real_, nrow=length(GENES), ncol=length(gsms),
+              dimnames=list(GENES, gsms))
+nz_cells <- setNames(rep(0, length(GENES)), GENES)
+kept_all <- 0
+depth    <- setNames(rep(NA_real_, length(gsms)), gsms)
+
+for (g in gsms) {
+  sce <- read10xCounts(file.path("/content/GSE292979", paste0(g, "_raw")), col.names=TRUE)
+  m   <- counts(sce)
+  sym <- as.character(rowData(sce)$Symbol)
+
+  bc  <- readLines(file.path(CALLED, paste0(g, "_called_barcodes.txt")))
+  bc  <- bc[nzchar(bc)]
+  stopifnot(all(bc %in% colnames(m)))
+  m   <- m[, bc, drop=FALSE]
+
+  lib  <- Matrix::colSums(m)
+  keep <- lib > 0
+  if (!any(keep)) stop(sprintf("%s has no cell with positive library size: ERROR, not a zero", g))
+  m <- m[, keep, drop=FALSE]; lib <- lib[keep]
+  total <- sum(lib)
+  kept_all <- kept_all + ncol(m)
+  depth[g] <- median(lib)
+
+  for (gene in GENES) {
+    rows <- which(sym == gene)
+    if (length(rows) == 0) next
+    s <- if (length(rows) == 1) m[rows, , drop=FALSE] else m[rows, , drop=FALSE]
+    csum <- Matrix::colSums(s)
+    val[gene, g] <- sum(csum) / total * 1e6
+    nz_cells[gene] <- nz_cells[gene] + sum(csum > 0)
+  }
+  cat(sprintf("%s  called %6d  kept %6d  total %12.0f  median lib %7.0f\n",
+              g, length(bc), ncol(m), total, depth[g]))
+}
+
+cat("\nkept cells across fourteen samples:", kept_all, "\n")
+cat("pooled floor at MIN_CELL_DETECT 0.01:", kept_all*MIN_CELL_DETECT, "cells\n")
+# change (4): the addendum pre-declared these. Disagreement is a finding, not a nuisance.
+if (kept_all != 117340) cat(sprintf(
+  "\n*** PRE-DECLARED n=14 DENOMINATOR WAS 117,340 AND THIS RUN GIVES %d. STOP AND REPORT. ***\n",
+  kept_all))
+
+donor <- val
+dmat  <- log1p(donor)
+stopifnot(all(is.na(dmat) | dmat >= 0))
+
+cat("\n---- DETECTION GATES, FOURTEEN SAMPLES ----\n")
+det <- nz_cells / kept_all
+surv <- character(0)
+for (gene in GENES) {
+  present <- !all(is.na(val[gene, ]))
+  d  <- det[gene]
+  nzd <- sum(!is.na(donor[gene,]) & donor[gene,] > 0)
+  ok <- present && d >= MIN_CELL_DETECT && (nzd/length(gsms)) >= MIN_DONOR_NONZERO
+  cat(sprintf("  %-10s %s  cells %7.4f%%  nz_cells %7d  donors nonzero %2d/%2d  %s\n", gene,
+      if (present) "present" else "ABSENT ", 100*d, nz_cells[gene], nzd, length(gsms),
+      if (!present) "NA, not zero" else if (ok) "keep" else "DROPPED"))
+  if (ok) surv <- c(surv, gene)
+}
+for (nm in c("PRIMARY","SECONDARY","OSTEOGENIC")) {
+  st <- get(nm); k <- sum(st %in% surv)
+  cat(sprintf("\n%-10s %d of %d survive  %s", nm, k, length(st),
+      if (k < MIN_SET_SURVIVORS) "*** VOID IN THIS DATASET. VOID IS NOT A NULL. ***" else "evaluable"))
+}
+cat("\n\nSURVIVOR SET AT n=14: ", paste(surv, collapse=", "), "\n")
+
+write.csv(data.frame(gsm=gsms, median_library=as.numeric(depth)),
+          file.path(OUT,"GSE292979_n14_depth_by_gsm.csv"), row.names=FALSE)
+write.csv(as.data.frame(dmat), file.path(OUT,"GSE292979_n14_donor_matrix_TRUEKEY_log1p.csv"))
+write.csv(as.data.frame(donor), file.path(OUT,"GSE292979_n14_donor_matrix_TRUEKEY_raw.csv"))
+write.csv(data.frame(gene=GENES, nz_cells=as.integer(nz_cells[GENES]),
+                     detect_frac=as.numeric(det[GENES]),
+                     survivor=GENES %in% surv),
+          file.path(OUT,"GSE292979_n14_detection_table.csv"), row.names=FALSE)
+cat("wrote", list.files(OUT), sep="\n  ")
+cat("\n\n⛔ KEYED BY GSM. GOES TO THE CO-AUTHOR, NOT TO THE SECOND ANALYST.\n")

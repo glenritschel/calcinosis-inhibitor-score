@@ -1,0 +1,6 @@
+# Python 3.10. Versions are those the clean-folder check ran under on 2026-11-07.
+numpy==2.2.6
+pandas==2.3.3
+requests==2.34.2
+# The GSE292979 Colab cells additionally use R through rpy2, with BiocManager,
+# DropletUtils, BiocParallel and Matrix, installed by the cells themselves.
