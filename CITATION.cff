@@ -8,6 +8,10 @@ authors:
     given-names: Glen C.
     affiliation: Ritschel Research
     orcid: "https://orcid.org/0009-0006-5341-8840"
+  - family-names: Sinha
+    given-names: Aditi
+    affiliation: Georgia Institute of Technology
+    orcid: "https://orcid.org/0009-0006-3673-5035"
 preferred-citation:
   type: article
   title: "A pre-specified mineralization-inhibitor score separates systemic sclerosis fibroblasts within one study and does not replicate in an independent series"
